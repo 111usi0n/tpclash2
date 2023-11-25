@@ -1,3 +1,111 @@
-git clone https://github.com/111usi0n/tpclash2.git
-cd tpclash
-task 
+name: TPClash
+
+on:
+  workflow_dispatch:
+    inputs:
+      trigger:
+        description: Manually trigger
+        required: true
+        type: choice
+        options:
+          - build
+  issue_comment:
+    types: [created]
+
+env:
+  FORCE_COLOR: 1
+  DOCKERHUB_USERNAME: ${{ secrets.DOCKERHUB_USERNAME }}
+  DOCKERHUB_PASSWORD: ${{ secrets.DOCKERHUB_PASSWORD }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Check Comment Content
+      id: check-comment
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const commentBody = context.payload.comment.body;
+          const regex = /^rebuild$/;
+          const shouldContinue = regex.test(commentBody);
+          if (!shouldContinue) {
+            console.log('Terminating workflow');
+            process.exit(1);
+          }
+    - name: Notify User
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const comment = `
+          > ${context.payload.comment.body}
+          > [Original Comment](https://github.com/${process.env.GITHUB_REPOSITORY}/issues/${context.issue.number}#issuecomment-${context.payload.comment.id})
+
+          @${context.payload.comment.user.login} GitHub Action has been re-run! Here is the link to the current workflow: [Workflow](${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID})
+          `;
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment,
+          });
+    - name: Checkout
+      uses: actions/checkout@v3
+    - name: Put back the git branch into git
+      shell: bash
+      run: |
+        branch=""
+        if [ -n "$GITHUB_HEAD_REF" ]; then
+          branch="$GITHUB_HEAD_REF"
+        else
+          branch="${GITHUB_REF##*/}"
+        fi
+        git checkout -b "$branch" || true
+    - name: Docker Login
+      shell: bash
+      run: docker login --username "${DOCKERHUB_USERNAME}" --password "${DOCKERHUB_PASSWORD}"
+    - name: Use Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '20.x'
+    - name: Use Golang
+      uses: actions/setup-go@v4
+      with:
+        go-version: 'stable'
+    - name: Install Deps
+      shell: bash
+      run: |
+        npm install -g pnpm @go-task/cli
+    - name: Build TPClash
+      shell: bash
+      run: task
+    - name: Get current date
+      id: timestamp
+      run: |
+        export TZ='Asia/Shanghai'
+        echo "date=$(date '+%Y-%m-%d-%H-%M-%S')" >> $GITHUB_OUTPUT
+    - name: Upload Artifact
+      id: upload
+      shell: bash
+      run: |
+        tar -zcvf tpclash-${{ steps.timestamp.outputs.date }}.tar.gz build
+        download_url=$(curl --upload-file tpclash-${{ steps.timestamp.outputs.date }}.tar.gz https://transfer.sh/tpclash-${{ steps.timestamp.outputs.date }}.tar.gz)
+        echo "download_url=${download_url}" >> $GITHUB_OUTPUT
+    - name: Create Comment Reply
+      uses: actions/github-script@v6
+      with:
+        script: |
+          const comment = `
+          > ${context.payload.comment.body}
+          > [Original Comment](https://github.com/${process.env.GITHUB_REPOSITORY}/issues/${context.issue.number}#issuecomment-${context.payload.comment.id})
+          
+          @${context.payload.comment.user.login} GitHub Action has run successfully! Here is the file: [Download File](${{ steps.upload.outputs.download_url }})
+          `;
+
+          github.rest.issues.createComment({
+            issue_number: context.issue.number,
+            owner: context.repo.owner,
+            repo: context.repo.repo,
+            body: comment
+          });
